@@ -1,13 +1,13 @@
 
 # -*- coding: utf-8 -*-
 """
-彩色時間表產生器 (Timetable Colorizer) v5
+彩色時間表產生器 (Timetable Colorizer) v6
 ------------------------------------------------
-相較 v4 的新增功能：
-  1. 匯出前可選擇版面格式：
-     - 保留原有格式（不改動任何版面設置）
-     - 橫向列印格式（A4 Landscape，自動設定列印方向、縮放至一頁寬、
-       邊界與凍結標題列，方便直接列印）
+相較 v5 的新增功能：
+  橫向列印格式現在會一併套用：
+    - 全部字型改為 Times New Roman
+    - 全部字體大小改為 12pt（保留原有的粗體/斜體/顏色等其他樣式）
+    - 所有欄寬統一設為 16
 
 執行方式：
     pip install streamlit openpyxl pandas
@@ -16,6 +16,7 @@
 
 import io
 import re
+from copy import copy
 from collections import OrderedDict
 
 import streamlit as st
@@ -23,6 +24,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
 from openpyxl.worksheet.page import PageMargins
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="彩色時間表產生器", layout="wide")
 
@@ -60,6 +62,11 @@ DEFAULT_PALETTE = [
 ]
 
 NONLESSON_LABEL_FILL = "F2F2F2"
+
+# 橫向列印格式的字型設定
+PRINT_FONT_NAME = "Times New Roman"
+PRINT_FONT_SIZE = 12
+PRINT_COLUMN_WIDTH = 16
 
 
 def is_non_lesson(text: str) -> bool:
@@ -205,7 +212,12 @@ def mapping_to_key_lookup(mapping_df):
 
 
 def apply_landscape_print_layout(ws):
-    """把工作表設定為適合A4橫向列印的版面（只改版面設置，不改內容）。"""
+    """
+    把工作表設定為適合A4橫向列印的版面：
+      - 列印方向、縮放、邊界、凍結標題列（版面設置）
+      - 全部字型改 Times New Roman、字體大小改 12pt（保留粗體/斜體/顏色）
+      - 所有欄寬統一設為 16
+    """
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
@@ -215,12 +227,32 @@ def apply_landscape_print_layout(ws):
                                    header=0.2, footer=0.2)
     ws.print_options.horizontalCentered = True
     ws.print_options.gridLines = False
+
     max_row = ws.max_row
     max_col = ws.max_column
     if max_row and max_col:
         ws.print_area = f"A1:{ws.cell(row=max_row, column=max_col).coordinate}"
     if max_row and max_row >= 2:
         ws.print_title_rows = "1:2"
+
+    # 統一字型、字體大小（保留原有粗體/斜體/顏色/底線等樣式）
+    for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+        for cell in row:
+            old_font = cell.font
+            cell.font = Font(
+                name=PRINT_FONT_NAME,
+                size=PRINT_FONT_SIZE,
+                bold=old_font.bold,
+                italic=old_font.italic,
+                color=old_font.color,
+                underline=old_font.underline,
+                strike=old_font.strike,
+            )
+
+    # 統一欄寬
+    for col_idx in range(1, max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = PRINT_COLUMN_WIDTH
 
 
 def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
@@ -293,7 +325,7 @@ def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
 # ----------------------------------------------------------------------------
 # Streamlit 介面
 # ----------------------------------------------------------------------------
-st.title("🎨 彩色時間表產生器 v5")
+st.title("🎨 彩色時間表產生器 v6")
 st.caption("上載時間表 Excel → 選擇老師 → 依「科目＋級別」分組配色 → 選擇版面格式 → 匯出彩色 Excel")
 
 uploaded = st.file_uploader("上載時間表 Excel (.xlsx)", type=["xlsx"])
@@ -393,8 +425,11 @@ if uploaded:
                 options=["保留原有格式（不改動版面設置）", "橫向列印格式（A4 Landscape，適合直接列印）"],
                 index=0,
                 horizontal=True,
-                help="橫向列印格式會自動設定列印方向為橫向、縮放至一頁寬、調整邊界，並凍結標題列方便列印，"
-                     "不會改動時間表內容本身。",
+                help=(
+                    "橫向列印格式會自動設定：列印方向為橫向、縮放至一頁、調整邊界、凍結標題列，"
+                    "並將全部字型統一為 Times New Roman、字體大小 12pt，欄寬統一為 16。"
+                    "「保留原有格式」則完全不改動版面與字型設定。"
+                ),
             )
             layout_mode = "landscape" if layout_choice.startswith("橫向") else "original"
 
@@ -409,7 +444,7 @@ if uploaded:
                     wb_out.save(buf)
                     buf.seek(0)
                     st.success(f"已完成！共匯出 {len(sheet_names)} 位老師的彩色時間表 + 顏色對照表"
-                               f"（{'橫向列印格式' if layout_mode=='landscape' else '原有格式'}）。")
+                               f"（{'橫向列印格式：Times New Roman 12pt，欄寬16' if layout_mode=='landscape' else '原有格式'}）。")
                     st.download_button(
                         "📥 下載彩色時間表 Excel",
                         data=buf,
