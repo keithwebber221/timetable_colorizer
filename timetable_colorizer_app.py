@@ -1,10 +1,13 @@
 
 # -*- coding: utf-8 -*-
 """
-彩色時間表產生器 (Timetable Colorizer) v4
+彩色時間表產生器 (Timetable Colorizer) v5
 ------------------------------------------------
-相較 v3 的修正：
-  1. 修正 SS2 對照名稱：SS2 = 退修2組（而非退修完組）
+相較 v4 的新增功能：
+  1. 匯出前可選擇版面格式：
+     - 保留原有格式（不改動任何版面設置）
+     - 橫向列印格式（A4 Landscape，自動設定列印方向、縮放至一頁寬、
+       邊界與凍結標題列，方便直接列印）
 
 執行方式：
     pip install streamlit openpyxl pandas
@@ -19,6 +22,7 @@ import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
+from openpyxl.worksheet.page import PageMargins
 
 st.set_page_config(page_title="彩色時間表產生器", layout="wide")
 
@@ -77,15 +81,11 @@ def extract_grade_label(classes_str: str):
         return "-", False
     if len(grades) == 1:
         return next(iter(grades)), False
-    return "混合", True  # 同一格內出現多個級別 -> 標示異常
+    return "混合", True
 
 
 def parse_cell(text: str):
-    """
-    把 '班別 科目 室別' 字串拆成資訊。
-    回傳 dict: subject, room, classes, grade_label, anomaly(bool, 是否需要人手檢查)
-    若非課堂格則回傳 None。
-    """
+    """把 '班別 科目 室別' 字串拆成資訊。若非課堂格則回傳 None。"""
     if text is None:
         return None
     t = str(text).strip()
@@ -103,11 +103,11 @@ def parse_cell(text: str):
 
     anomaly = False
     if not re.search(r"[A-Za-z\u4e00-\u9fff]", subject):
-        anomaly = True  # 科目代碼看起來不合理，可能解析錯誤
+        anomaly = True
 
     if not classes.strip():
         grade_label, g_anom = "-", False
-        anomaly = True  # 缺少班別資訊，可能解析錯誤
+        anomaly = True
     else:
         grade_label, g_anom = extract_grade_label(classes)
         anomaly = anomaly or g_anom
@@ -143,10 +143,6 @@ def make_group_name(subject: str, grade_label: str) -> str:
 
 
 def collect_lesson_keys(wb, sheet_names):
-    """
-    掃描所選分頁，回傳 OrderedDict:
-      key = (subject, grade_label) -> {"classes_examples": set(), "anomaly": bool}
-    """
     keys = OrderedDict()
     for name in sheet_names:
         ws = wb[name]
@@ -208,9 +204,28 @@ def mapping_to_key_lookup(mapping_df):
     return key_to_group, key_to_skip
 
 
+def apply_landscape_print_layout(ws):
+    """把工作表設定為適合A4橫向列印的版面（只改版面設置，不改內容）。"""
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(left=0.3, right=0.3, top=0.4, bottom=0.4,
+                                   header=0.2, footer=0.2)
+    ws.print_options.horizontalCentered = True
+    ws.print_options.gridLines = False
+    max_row = ws.max_row
+    max_col = ws.max_column
+    if max_row and max_col:
+        ws.print_area = f"A1:{ws.cell(row=max_row, column=max_col).coordinate}"
+    if max_row and max_row >= 2:
+        ws.print_title_rows = "1:2"
+
+
 def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
-                             legend_sheet_name="顏色對照表"):
-    """在原 workbook 上對所選分頁上色，移除其餘分頁，並加入顏色對照表分頁。"""
+                             layout_mode="original", legend_sheet_name="顏色對照表"):
+    """在原 workbook 上對所選分頁上色，移除其餘分頁，套用版面格式，並加入顏色對照表分頁。"""
     key_to_group, key_to_skip = mapping_to_key_lookup(full_mapping_df)
 
     for name in sheet_names:
@@ -230,7 +245,7 @@ def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
                     continue
                 key = (parsed["subject"], parsed["grade_label"])
                 if key_to_skip.get(key, False):
-                    continue  # 使用者選擇不填色 / 系統自動跳過的異常項目
+                    continue
                 group = key_to_group.get(key)
                 color = group_color_map.get(group)
                 if color:
@@ -241,6 +256,10 @@ def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
     for name in list(wb.sheetnames):
         if name not in sheet_names:
             del wb[name]
+
+    if layout_mode == "landscape":
+        for name in sheet_names:
+            apply_landscape_print_layout(wb[name])
 
     if legend_sheet_name in wb.sheetnames:
         del wb[legend_sheet_name]
@@ -274,8 +293,8 @@ def apply_colors_and_export(wb, sheet_names, full_mapping_df, group_color_map,
 # ----------------------------------------------------------------------------
 # Streamlit 介面
 # ----------------------------------------------------------------------------
-st.title("🎨 彩色時間表產生器 v4")
-st.caption("上載時間表 Excel → 選擇老師 → 依「科目＋級別」分組配色 → 匯出彩色 Excel（含顏色對照表）")
+st.title("🎨 彩色時間表產生器 v5")
+st.caption("上載時間表 Excel → 選擇老師 → 依「科目＋級別」分組配色 → 選擇版面格式 → 匯出彩色 Excel")
 
 uploaded = st.file_uploader("上載時間表 Excel (.xlsx)", type=["xlsx"])
 
@@ -368,16 +387,29 @@ if uploaded:
                             g, value=st.session_state["group_colors"][g], key=f"color_{g}"
                         )
 
-            st.subheader("④ 產生彩色 Excel")
+            st.subheader("④ 選擇輸出版面格式")
+            layout_choice = st.radio(
+                "版面格式",
+                options=["保留原有格式（不改動版面設置）", "橫向列印格式（A4 Landscape，適合直接列印）"],
+                index=0,
+                horizontal=True,
+                help="橫向列印格式會自動設定列印方向為橫向、縮放至一頁寬、調整邊界，並凍結標題列方便列印，"
+                     "不會改動時間表內容本身。",
+            )
+            layout_mode = "landscape" if layout_choice.startswith("橫向") else "original"
+
+            st.subheader("⑤ 產生彩色 Excel")
             if st.button("🚀 產生並下載彩色時間表", type="primary"):
                 try:
                     wb_out = apply_colors_and_export(
-                        wb, sheet_names, edited_full_df, st.session_state["group_colors"]
+                        wb, sheet_names, edited_full_df, st.session_state["group_colors"],
+                        layout_mode=layout_mode,
                     )
                     buf = io.BytesIO()
                     wb_out.save(buf)
                     buf.seek(0)
-                    st.success(f"已完成！共匯出 {len(sheet_names)} 位老師的彩色時間表 + 顏色對照表。")
+                    st.success(f"已完成！共匯出 {len(sheet_names)} 位老師的彩色時間表 + 顏色對照表"
+                               f"（{'橫向列印格式' if layout_mode=='landscape' else '原有格式'}）。")
                     st.download_button(
                         "📥 下載彩色時間表 Excel",
                         data=buf,
